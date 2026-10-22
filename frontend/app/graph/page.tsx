@@ -19,7 +19,8 @@ type Tooltip = { x: number; y: number; title: string; body?: string; color?: str
 
 const BG = "#1a1a2e";
 const NODE_RING = "rgba(255,255,255,0.35)";
-const radius = (n: GraphNodeData) => Math.max(6, Math.min(20, 4 + n.connectionCount * 2));
+// All nodes are the same size; how connected a node is shows in its edges, not its size.
+const NODE_RADIUS = 9;
 const label = (code: string) => code.replace(/_/g, " ");
 
 export default function GraphPage() {
@@ -84,10 +85,20 @@ export default function GraphPage() {
     merge.append("feMergeNode").attr("in", "SourceGraphic");
 
     const root = svg.append("g");
+    // Semantic zoom: the zoom transform is applied to node *positions* only. Nodes, labels and lines keep
+    // their on-screen size, so zooming in spreads crowded nodes apart instead of magnifying them.
+    let transform = d3.zoomIdentity;
+    let fullLabels = false;
+    const X = (n: SimNode) => transform.applyX(n.x ?? 0);
+    const Y = (n: SimNode) => transform.applyY(n.y ?? 0);
     svg.call(
       d3.zoom<SVGSVGElement, unknown>()
-        .scaleExtent([0.1, 4])
-        .on("zoom", (ev) => root.attr("transform", ev.transform.toString())),
+        .scaleExtent([0.1, 8])
+        .on("zoom", (ev) => {
+          transform = ev.transform;
+          updateLabelText();
+          render();
+        }),
     ).on("dblclick.zoom", null);
     svg.on("click", (ev) => { if (ev.target === svgRef.current) select(null); });
 
@@ -128,7 +139,7 @@ export default function GraphPage() {
 
     const node = root.append("g").selectAll<SVGCircleElement, SimNode>("circle").data(nodes).join("circle")
       .attr("class", "node")
-      .attr("r", radius)
+      .attr("r", NODE_RADIUS)
       .attr("fill", (d) => sourceColor(d.source))
       .attr("stroke", (d) => (d.id === selectedIdRef.current ? "#ffffff" : NODE_RING))
       .attr("stroke-width", (d) => (d.id === selectedIdRef.current ? 3 : 1.5))
@@ -175,25 +186,36 @@ export default function GraphPage() {
       // keep unconnected nodes from drifting out of view
       .force("x", d3.forceX(width / 2).strength(0.04))
       .force("y", d3.forceY(height / 2).strength(0.04))
-      .force("collide", d3.forceCollide<SimNode>((d) => radius(d) + 6))
+      .force("collide", d3.forceCollide<SimNode>(NODE_RADIUS + 6))
       .force("cluster", clusterForce);
 
     node.call(
       d3.drag<SVGCircleElement, SimNode>()
         .clickDistance(4)
+        // drag in screen coordinates, then convert back to simulation coordinates for the current zoom
+        .subject((_, d) => ({ x: X(d), y: Y(d) }))
         .on("start", (ev, d) => { if (!ev.active) sim.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; })
-        .on("drag", (ev, d) => { d.fx = ev.x; d.fy = ev.y; })
+        .on("drag", (ev, d) => { d.fx = transform.invertX(ev.x); d.fy = transform.invertY(ev.y); })
         .on("end", (ev, d) => { if (!ev.active) sim.alphaTarget(0); d.fx = null; d.fy = null; }),
     );
 
-    sim.on("tick", () => {
+    // Long titles are truncated at normal zoom and shown in full once zoomed in.
+    function updateLabelText() {
+      const full = transform.k >= 1.6;
+      if (full === fullLabels) return;
+      fullLabels = full;
+      labels.text((d) => (full || d.title.length <= 32 ? d.title : d.title.slice(0, 31) + "…"));
+    }
+
+    function render() {
       // Stop lines at the circle edge so arrowheads stay visible.
       const ends = (d: SimLink) => {
         const s = d.source as SimNode, t = d.target as SimNode;
-        const dx = (t.x ?? 0) - (s.x ?? 0), dy = (t.y ?? 0) - (s.y ?? 0);
+        const sx = X(s), sy = Y(s), tx = X(t), ty = Y(t);
+        const dx = tx - sx, dy = ty - sy;
         const len = Math.hypot(dx, dy) || 1;
-        const rs = radius(s) + 1, rt = radius(t) + (d.directional ? 3 : 1);
-        return { x1: (s.x ?? 0) + (dx / len) * rs, y1: (s.y ?? 0) + (dy / len) * rs, x2: (t.x ?? 0) - (dx / len) * rt, y2: (t.y ?? 0) - (dy / len) * rt };
+        const rs = NODE_RADIUS + 1, rt = NODE_RADIUS + (d.directional ? 3 : 1);
+        return { x1: sx + (dx / len) * rs, y1: sy + (dy / len) * rs, x2: tx - (dx / len) * rt, y2: ty - (dy / len) * rt };
       };
       for (const sel of [edge, edgeHit]) {
         sel.each(function (d) {
@@ -201,27 +223,29 @@ export default function GraphPage() {
           d3.select(this).attr("x1", p.x1).attr("y1", p.y1).attr("x2", p.x2).attr("y2", p.y2);
         });
       }
-      node.attr("cx", (d) => d.x ?? 0).attr("cy", (d) => d.y ?? 0);
-      labels.attr("x", (d) => (d.x ?? 0) + radius(d) + 4).attr("y", (d) => (d.y ?? 0) + 4);
+      node.attr("cx", X).attr("cy", Y);
+      labels.attr("x", (d) => X(d) + NODE_RADIUS + 4).attr("y", (d) => Y(d) + 4);
 
       hulls.attr("d", (c) => {
         const pts: [number, number][] = [];
         for (const id of c.nodeIds) {
           const n = byId.get(id);
           if (!n) continue;
-          const r = radius(n) + 18;
-          for (let k = 0; k < 10; k++) pts.push([(n.x ?? 0) + r * Math.cos((k / 10) * 2 * Math.PI), (n.y ?? 0) + r * Math.sin((k / 10) * 2 * Math.PI)]);
+          const r = NODE_RADIUS + 18;
+          for (let k = 0; k < 10; k++) pts.push([X(n) + r * Math.cos((k / 10) * 2 * Math.PI), Y(n) + r * Math.sin((k / 10) * 2 * Math.PI)]);
         }
         const hull = d3.polygonHull(pts);
         return hull ? d3.line().curve(d3.curveCatmullRomClosed)(hull) : null;
       });
       hullLabels.each(function (c) {
         const members = c.nodeIds.map((id) => byId.get(id)).filter((n): n is SimNode => !!n);
-        const cx = d3.mean(members, (n) => n.x) ?? 0;
-        const top = (d3.min(members, (n) => (n.y ?? 0) - radius(n)) ?? 0) - 26;
+        const cx = d3.mean(members, X) ?? 0;
+        const top = (d3.min(members, (n) => Y(n) - NODE_RADIUS) ?? 0) - 26;
         d3.select(this).attr("x", cx).attr("y", top);
       });
-    });
+    }
+
+    sim.on("tick", render);
 
     applyHidden(svgRef.current, hiddenRef.current);
     return () => { sim.stop(); };
@@ -268,7 +292,7 @@ export default function GraphPage() {
             {data.nodes.length} nodes · {data.edges.length} relationships · {data.clusters.length} clusters
           </span>
         )}
-        <span className="text-xs text-zinc-500">Scroll to zoom · drag background to pan · drag nodes · hover edges for why</span>
+        <span className="text-xs text-zinc-500">Scroll to zoom (spreads nodes apart) · drag background to pan · drag nodes · hover edges for why</span>
       </div>
       {error && <p className="mt-3 text-sm text-red-400">Backend error: {error}</p>}
 
@@ -318,7 +342,6 @@ export default function GraphPage() {
                 <span className="inline-block h-3 w-5 shrink-0 rounded-full border border-dashed border-zinc-400/60" />
                 cluster = same concept
               </div>
-              <div className="mt-1 px-1 text-[11px] text-zinc-500">Bigger node = more connections</div>
             </div>
           </div>
         )}
