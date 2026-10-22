@@ -30,6 +30,9 @@ public class GraphNode {
     private String source;
 
     @Property
+    private String summary;
+
+    @Property
     private Instant createdAt;
 
     @Property

@@ -44,8 +44,10 @@ public class ChatService {
             RULES
             1. Use only the KNOWLEDGE BASE CONTEXT below. Do not use outside or general knowledge, and do not guess.
             2. Combine information across several documents when it helps: point out where sources agree,
-               add to each other, or conflict. The "Related via graph" documents are linked to the main
-               documents (similar content or shared concepts); use them to connect ideas and say how they connect.
+               add to each other, or conflict. The "Related via graph" documents are linked to the main documents
+               with a typed relationship (same concept, shared idea, opposing view, builds upon, example of,
+               supersedes, depends on, contrasts with) and an explanation. Use the type: point out opposing views,
+               say when one source supersedes another (prefer the newer), and explain prerequisites.
             3. Cite the document title in square brackets after each claim, e.g. [PHP2SHELL: Two PHP Engine Vulnerabilities].
             4. If the context does not contain enough to answer fully, say clearly what is missing, answer only the
                part the context supports, and then ASK the user whether they want you to fill the gap with outside

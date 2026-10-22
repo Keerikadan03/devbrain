@@ -27,12 +27,14 @@
 /Users/fensenraju/Downloads/devbrain/src/main/java/com/devbrain/model/entity/KnowledgeNode.java
 /Users/fensenraju/Downloads/devbrain/src/main/java/com/devbrain/model/entity/ResearchSession.java
 /Users/fensenraju/Downloads/devbrain/src/main/java/com/devbrain/model/neo4j/GraphNode.java
+/Users/fensenraju/Downloads/devbrain/src/main/java/com/devbrain/model/neo4j/RelationType.java
 /Users/fensenraju/Downloads/devbrain/src/main/java/com/devbrain/model/neo4j/SimilarRelationship.java
 /Users/fensenraju/Downloads/devbrain/src/main/java/com/devbrain/repository/GraphNodeRepository.java
 /Users/fensenraju/Downloads/devbrain/src/main/java/com/devbrain/repository/KnowledgeNodeRepository.java
 /Users/fensenraju/Downloads/devbrain/src/main/java/com/devbrain/repository/ResearchSessionRepository.java
 /Users/fensenraju/Downloads/devbrain/src/main/java/com/devbrain/service/ChatService.java
 /Users/fensenraju/Downloads/devbrain/src/main/java/com/devbrain/service/KnowledgeService.java
+/Users/fensenraju/Downloads/devbrain/src/main/java/com/devbrain/service/RelationshipClassifier.java
 /Users/fensenraju/Downloads/devbrain/src/main/java/com/devbrain/service/SourceDetector.java
 /Users/fensenraju/Downloads/devbrain/src/main/java/com/devbrain/util/JsonText.java
 /Users/fensenraju/Downloads/devbrain/src/main/java/com/devbrain/util/Prompts.java

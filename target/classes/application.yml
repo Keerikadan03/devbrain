@@ -51,7 +51,9 @@ langchain4j:
 # DevBrain custom config
 devbrain:
   knowledge:
-    similarity-threshold: 0.62
+    similarity-threshold: 0.45        # candidate recall cutoff (node vectors); raised automatically as the graph grows
+    max-relationships-per-node: 15    # cap on candidates judged per new document
+    cluster-threshold: 0.8            # same_concept strength that groups nodes into a visual cluster
     max-text-length: 8000
   whisper:
     enabled: true

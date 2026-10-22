@@ -5,7 +5,7 @@ import com.devbrain.event.IngestionEvent;
 import com.devbrain.event.IngestionProducer;
 import com.devbrain.model.dto.IngestionRequest;
 import com.devbrain.model.entity.KnowledgeNode;
-import com.devbrain.model.neo4j.GraphNode;
+import com.devbrain.model.neo4j.RelationType;
 import com.devbrain.repository.KnowledgeNodeRepository;
 import com.devbrain.service.KnowledgeService;
 import com.devbrain.service.SourceDetector;
@@ -152,11 +152,24 @@ public class KnowledgeController {
 
     /**
      * GET /api/knowledge/graph/{nodeId}
-     * Returns graph neighbors (SIMILAR relationships) for a node.
+     * All typed relationships of one node.
      */
     @GetMapping("/graph/{nodeId}")
-    public ResponseEntity<List<GraphNode>> getRelatedNodes(@PathVariable String nodeId) {
-        return ResponseEntity.ok(knowledgeService.getRelatedNodes(nodeId));
+    public ResponseEntity<List<Map<String, Object>>> getRelatedNodes(@PathVariable String nodeId) {
+        return ResponseEntity.ok(knowledgeService.getRelatedNodes(nodeId, null));
+    }
+
+    /**
+     * GET /api/knowledge/graph/{nodeId}/type/{relationType}
+     * Relationships of one node filtered by type (e.g. builds_upon).
+     */
+    @GetMapping("/graph/{nodeId}/type/{relationType}")
+    public ResponseEntity<?> getRelatedByType(@PathVariable String nodeId, @PathVariable String relationType) {
+        if (!RelationType.isKnown(relationType)) {
+            return ResponseEntity.badRequest().body(Map.of("error", "Unknown relation type: " + relationType,
+                    "known", knowledgeService.getRelationTypeInfo().stream().map(t -> t.get("code")).toList()));
+        }
+        return ResponseEntity.ok(knowledgeService.getRelatedNodes(nodeId, relationType.toLowerCase()));
     }
 
     private String truncate(String text, int maxLen) {

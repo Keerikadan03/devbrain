@@ -1,14 +1,13 @@
 package com.devbrain.service;
 
 import com.devbrain.model.entity.KnowledgeNode;
-import com.devbrain.model.neo4j.GraphNode;
+import com.devbrain.model.neo4j.RelationType;
 import com.devbrain.repository.GraphNodeRepository;
 import com.devbrain.repository.KnowledgeNodeRepository;
 import tools.jackson.databind.ObjectMapper;
 import dev.langchain4j.data.document.Metadata;
 import dev.langchain4j.data.embedding.Embedding;
 import dev.langchain4j.data.segment.TextSegment;
-import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.embedding.EmbeddingModel;
 import dev.langchain4j.store.embedding.EmbeddingMatch;
 import dev.langchain4j.store.embedding.EmbeddingSearchRequest;
@@ -38,11 +37,20 @@ public class KnowledgeService {
     private final EmbeddingStore<TextSegment> embeddingStore;
     private final ObjectMapper objectMapper;
     private final Neo4jClient neo4jClient;
-    private final ChatModel chatModel;
+    private final RelationshipClassifier relationshipClassifier;
     private final JdbcTemplate jdbc;
 
-    @Value("${devbrain.knowledge.similarity-threshold:0.75}")
-    private double similarityThreshold;
+    /** Minimum node-vector similarity for a document to be considered as a link candidate (small graphs). */
+    @Value("${devbrain.knowledge.similarity-threshold:0.45}")
+    private double baseSimilarityThreshold;
+
+    /** Upper bound on candidates judged per new document, i.e. on relationships it can get at ingest. */
+    @Value("${devbrain.knowledge.max-relationships-per-node:15}")
+    private int maxRelationshipsPerNode;
+
+    /** same_concept edges at or above this strength put their nodes in one visual cluster. */
+    @Value("${devbrain.knowledge.cluster-threshold:0.8}")
+    private double clusterThreshold;
 
     public KnowledgeService(
             KnowledgeNodeRepository nodeRepository,
@@ -51,7 +59,7 @@ public class KnowledgeService {
             EmbeddingStore<TextSegment> embeddingStore,
             ObjectMapper objectMapper,
             Neo4jClient neo4jClient,
-            ChatModel chatModel,
+            RelationshipClassifier relationshipClassifier,
             JdbcTemplate jdbc) {
         this.nodeRepository = nodeRepository;
         this.graphNodeRepository = graphNodeRepository;
@@ -59,7 +67,7 @@ public class KnowledgeService {
         this.embeddingStore = embeddingStore;
         this.objectMapper = objectMapper;
         this.neo4jClient = neo4jClient;
-        this.chatModel = chatModel;
+        this.relationshipClassifier = relationshipClassifier;
         this.jdbc = jdbc;
     }
 
@@ -115,7 +123,6 @@ public class KnowledgeService {
     private static final int CHUNK_CHARS = 1000;
     private static final int CHUNK_OVERLAP = 150;
     private static final int MAX_CHUNKS = 150;
-    private static final int MAX_SIMILAR_LINKS = 5;
 
     /**
      * Writes everything derived from a saved node: one "node" vector (title + summary + tags, used
@@ -139,9 +146,10 @@ public class KnowledgeService {
 
         neo4jClient.query("""
                 MERGE (n:Knowledge {uuid: $uuid})
-                SET n.title = $title, n.source = $source, n.createdAt = $createdAt, n.extra = $extra
+                SET n.title = $title, n.source = $source, n.summary = $summary, n.createdAt = $createdAt, n.extra = $extra
                 """)
                 .bindAll(Map.of("uuid", id, "title", node.getTitle(), "source", node.getSource(),
+                        "summary", nullToEmpty(node.getSummary()),
                         "createdAt", node.getCreatedAt().toString(), "extra", nullToEmpty(node.getMetadata())))
                 .run();
         for (String term : terms) {
@@ -202,33 +210,34 @@ public class KnowledgeService {
         return s == null ? "" : s;
     }
 
-    private static final int MAX_CANDIDATES = 6;
-    private static final double CANDIDATE_MIN_SCORE = 0.45;
     private static final double MIN_RELATION_STRENGTH = 0.5;
 
     /**
-     * Two-stage relation building.
-     * 1) Cheap recall: candidates are the nearest nodes by vector similarity plus nodes sharing a concept.
-     * 2) Precise decision: an LLM judges each candidate pair and states WHY they are related. Only pairs
-     *    about the same specific subject are linked, so generic overlap ("both are documentation") never links.
+     * Two-stage relationship building.
+     * 1) Recall: nearest documents by node vector (dynamic threshold) plus documents sharing a concept.
+     * 2) Precision: RelationshipClassifier decides which are genuinely related and how (8 typed relations,
+     *    with direction and an explanation). Stored as KNOWLEDGE_REL edges.
+     * Returns every verdict (linked or not) so callers can show why pairs were or weren't linked.
      */
     private List<Map<String, Object>> linkNode(KnowledgeNode node, Embedding nodeEmbedding) {
         String id = node.getId().toString();
         Map<String, KnowledgeNode> candidates = new LinkedHashMap<>();
+        double threshold = computeDynamicThreshold();
 
         for (EmbeddingMatch<TextSegment> m : embeddingStore.search(EmbeddingSearchRequest.builder()
-                .queryEmbedding(nodeEmbedding).maxResults(100).minScore(CANDIDATE_MIN_SCORE).build()).matches()) {
+                .queryEmbedding(nodeEmbedding).maxResults(maxRelationshipsPerNode * 10).minScore(threshold).build()).matches()) {
             String other = m.embedded().metadata().getString("nodeId");
             if (!"node".equals(m.embedded().metadata().getString("kind")) || other == null || other.equals(id)) continue;
-            if (candidates.size() >= MAX_CANDIDATES) break;
+            if (candidates.size() >= maxRelationshipsPerNode) break;
             findNode(other).ifPresent(n -> candidates.putIfAbsent(other, n));
         }
         for (Map<String, Object> row : neo4jClient.query("""
-                MATCH (n:Knowledge {uuid: $id})-[:MENTIONS]->(:Concept)<-[:MENTIONS]-(m:Knowledge)
-                WHERE m.uuid <> $id RETURN DISTINCT m.uuid AS id LIMIT 6
+                MATCH (n:Knowledge {uuid: $id})-[:MENTIONS]->(c:Concept)<-[:MENTIONS]-(m:Knowledge)
+                WHERE m.uuid <> $id
+                RETURN m.uuid AS id, count(DISTINCT c) AS shared ORDER BY shared DESC
                 """).bind(id).to("id").fetch().all()) {
+            if (candidates.size() >= maxRelationshipsPerNode) break;
             String other = String.valueOf(row.get("id"));
-            if (candidates.size() >= MAX_CANDIDATES + 3) break;
             findNode(other).ifPresent(n -> candidates.putIfAbsent(other, n));
         }
         if (candidates.isEmpty()) {
@@ -237,45 +246,59 @@ public class KnowledgeService {
         }
 
         List<KnowledgeNode> list = new ArrayList<>(candidates.values());
-        StringBuilder prompt = new StringBuilder(com.devbrain.util.Prompts.RELATION_JUDGE)
-                .append("NEW DOCUMENT\n").append(describe(node)).append("\nCANDIDATES\n");
-        for (int i = 0; i < list.size(); i++) {
-            prompt.append("[").append(i + 1).append("] ").append(describe(list.get(i))).append("\n");
-        }
-
-        int linked = 0;
         List<Map<String, Object>> judgements = new ArrayList<>();
-        try {
-            String reply = chatModel.chat(prompt.toString());
-            var verdicts = objectMapper.readValue(com.devbrain.util.JsonText.stripFences(reply),
-                    new tools.jackson.core.type.TypeReference<List<Map<String, Object>>>() {});
-            for (Map<String, Object> v : verdicts) {
-                int idx = ((Number) v.getOrDefault("id", 0)).intValue() - 1;
-                double strength = v.get("strength") instanceof Number n ? n.doubleValue() : 0;
-                if (idx < 0 || idx >= list.size()) continue;
-                boolean related = Boolean.TRUE.equals(v.get("related")) && strength >= MIN_RELATION_STRENGTH;
-                Map<String, Object> j = new LinkedHashMap<>();
-                j.put("document", node.getTitle());
-                j.put("candidate", list.get(idx).getTitle());
-                j.put("linked", related);
-                j.put("strength", strength);
-                j.put("reason", String.valueOf(v.getOrDefault("relation", "")));
-                judgements.add(j);
-                if (!related) continue;
-                neo4jClient.query("""
-                        MATCH (a:Knowledge {uuid: $from}), (b:Knowledge {uuid: $to})
-                        MERGE (a)-[r:RELATED]->(b) SET r.strength = $strength, r.reason = $reason
-                        """)
-                        .bindAll(Map.of("from", id, "to", list.get(idx).getId().toString(),
-                                "strength", strength, "reason", String.valueOf(v.getOrDefault("relation", ""))))
-                        .run();
-                linked++;
-            }
-        } catch (Exception e) {
-            log.warn("[KnowledgeService] Relation judging failed for {}: {}", id, e.getMessage());
+        int linked = 0;
+        for (RelationshipClassifier.Classification c : relationshipClassifier.classify(node, list, this::describe)) {
+            KnowledgeNode other = list.get(c.candidateIndex());
+            boolean link = c.related() && c.strength() >= MIN_RELATION_STRENGTH;
+
+            Map<String, Object> j = new LinkedHashMap<>();
+            j.put("document", node.getTitle());
+            j.put("candidate", other.getTitle());
+            j.put("linked", link);
+            j.put("type", link ? c.type().getCode() : "");
+            j.put("strength", c.strength());
+            j.put("explanation", c.explanation());
+            judgements.add(j);
+            if (!link) continue;
+
+            RelationType type = c.type();
+            // Directional edges point FROM -> TO ("FROM builds upon TO"); symmetric ones keep new -> candidate.
+            boolean newFirst = !type.isDirectional() || c.newIsSource();
+            String from = newFirst ? id : other.getId().toString();
+            String to = newFirst ? other.getId().toString() : id;
+            createTypedRelationship(from, to, type, c.strength(), c.explanation());
+            linked++;
         }
-        log.info("[KnowledgeService] Linked {} of {} candidates for {}", linked, list.size(), id);
+        log.info("[KnowledgeService] Linked {} of {} candidates for {} (threshold {})", linked, list.size(), id, threshold);
         return judgements;
+    }
+
+    /** Replaces any existing KNOWLEDGE_REL between the pair (either direction) with the new classification. */
+    private void createTypedRelationship(String from, String to, RelationType type, double score, String explanation) {
+        neo4jClient.query("""
+                MATCH (a:Knowledge {uuid: $from})
+                MATCH (b:Knowledge {uuid: $to})
+                OPTIONAL MATCH (a)-[old:KNOWLEDGE_REL]-(b)
+                DELETE old
+                WITH DISTINCT a, b
+                CREATE (a)-[:KNOWLEDGE_REL {score: $score, relationType: $type, color: $color,
+                                            directional: $directional, explanation: $explanation}]->(b)
+                """)
+                .bindAll(Map.of("from", from, "to", to, "score", score, "type", type.getCode(),
+                        "color", type.getColor(), "directional", type.isDirectional(), "explanation", explanation))
+                .run();
+    }
+
+    /**
+     * Candidate cutoff rises with graph size: small graphs cast a wider net, large ones stay focused.
+     * <20 nodes: base; <100: base + 0.05; 100+: base + 0.10 (capped at 0.85).
+     */
+    private double computeDynamicThreshold() {
+        long count = nodeRepository.count();
+        if (count < 20) return baseSimilarityThreshold;
+        if (count < 100) return Math.min(baseSimilarityThreshold + 0.05, 0.80);
+        return Math.min(baseSimilarityThreshold + 0.10, 0.85);
     }
 
     private String describe(KnowledgeNode n) {
@@ -318,15 +341,16 @@ public class KnowledgeService {
 
     /**
      * One-hop graph neighbours of the given nodes (excluding themselves), with why they are related.
-     * Each row: id, title, kind ("related"), detail (why they are related).
+     * Each row: id, title, kind (relationship type label), detail (the classifier's explanation).
      */
     public List<Map<String, Object>> neighbors(Collection<String> nodeIds) {
         if (nodeIds.isEmpty()) return List.of();
         return new ArrayList<>(neo4jClient.query("""
-                MATCH (a:Knowledge)-[r:RELATED]-(b:Knowledge)
+                MATCH (a:Knowledge)-[r:KNOWLEDGE_REL]-(b:Knowledge)
                 WHERE a.uuid IN $ids AND NOT b.uuid IN $ids
-                RETURN b.uuid AS id, b.title AS title, 'related' AS kind, r.reason AS detail
-                ORDER BY r.strength DESC
+                RETURN b.uuid AS id, b.title AS title, replace(r.relationType, '_', ' ') AS kind,
+                       r.explanation AS detail
+                ORDER BY r.score DESC
                 """).bind(new ArrayList<>(nodeIds)).to("ids").fetch().all());
     }
 
@@ -338,24 +362,105 @@ public class KnowledgeService {
     }
 
     /**
-     * Get graph neighbors of a node.
+     * Typed relationships of one node, optionally filtered by type (null = all). Each row says which
+     * way the edge points relative to this node ("outgoing": this node is the FROM side).
      */
-    public List<GraphNode> getRelatedNodes(String nodeId) {
-        return graphNodeRepository.findSimilarNodes(nodeId);
+    public List<Map<String, Object>> getRelatedNodes(String nodeId, String relationType) {
+        Map<String, Object> params = new HashMap<>();
+        params.put("id", nodeId);
+        params.put("type", relationType);
+        return new ArrayList<>(neo4jClient.query("""
+                MATCH (n:Knowledge {uuid: $id})-[r:KNOWLEDGE_REL]-(m:Knowledge)
+                WHERE $type IS NULL OR r.relationType = $type
+                RETURN m.uuid AS id, m.title AS title, m.source AS source, r.relationType AS relationType,
+                       r.color AS color, r.directional AS directional, r.score AS score, r.explanation AS explanation,
+                       CASE WHEN startNode(r) = n THEN 'outgoing' ELSE 'incoming' END AS direction
+                ORDER BY r.score DESC
+                """).bindAll(params).fetch().all());
     }
 
     /**
-     * Whole graph for visualization: knowledge nodes and RELATED edges (each with the reason).
+     * Whole graph for visualization:
+     * { nodes: [{id,title,source,summary,createdAt,connectionCount}],
+     *   edges: [{source,target,score,relationType,color,directional,explanation}],
+     *   clusters: [{label,nodeIds,size}], relationTypes: [{code,color,directional,description,label}] }
+     * connectionCount is computed here rather than stored, so it can never go stale after deletes.
      */
     public Map<String, Object> getGraph() {
-        Collection<Map<String, Object>> nodes = neo4jClient
-                .query("MATCH (n:Knowledge) RETURN n.uuid AS id, n.title AS title, n.source AS source")
-                .fetch().all();
-        Collection<Map<String, Object>> edges = neo4jClient.query("""
-                MATCH (a:Knowledge)-[r:RELATED]->(b:Knowledge)
-                RETURN a.uuid AS from, b.uuid AS to, 'related' AS kind, r.strength AS score, r.reason AS via
-                """).fetch().all();
-        return Map.of("nodes", nodes, "edges", edges);
+        List<Map<String, Object>> nodes = new ArrayList<>(neo4jClient.query("""
+                MATCH (n:Knowledge)
+                OPTIONAL MATCH (n)-[r:KNOWLEDGE_REL]-()
+                RETURN n.uuid AS id, n.title AS title, n.source AS source, n.summary AS summary,
+                       n.createdAt AS createdAt, count(r) AS connectionCount
+                """).fetch().all());
+        List<Map<String, Object>> edges = new ArrayList<>(neo4jClient.query("""
+                MATCH (a:Knowledge)-[r:KNOWLEDGE_REL]->(b:Knowledge)
+                RETURN a.uuid AS source, b.uuid AS target, r.score AS score, r.relationType AS relationType,
+                       r.color AS color, r.directional AS directional, r.explanation AS explanation
+                """).fetch().all());
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("nodes", nodes);
+        result.put("edges", edges);
+        result.put("clusters", computeClusters(nodes, edges));
+        result.put("relationTypes", getRelationTypeInfo());
+        return result;
+    }
+
+    /**
+     * Union-find over strong same_concept edges: nodes about the same thing form one cluster.
+     */
+    private List<Map<String, Object>> computeClusters(List<Map<String, Object>> nodes, List<Map<String, Object>> edges) {
+        Map<String, String> parent = new HashMap<>();
+        Map<String, String> titles = new HashMap<>();
+        Map<String, Long> degree = new HashMap<>();
+        for (Map<String, Object> n : nodes) {
+            String id = (String) n.get("id");
+            parent.put(id, id);
+            titles.put(id, (String) n.get("title"));
+            degree.put(id, n.get("connectionCount") instanceof Number c ? c.longValue() : 0L);
+        }
+        for (Map<String, Object> e : edges) {
+            double score = e.get("score") instanceof Number n ? n.doubleValue() : 0;
+            if (RelationType.SAME_CONCEPT.getCode().equals(e.get("relationType")) && score >= clusterThreshold) {
+                union(parent, (String) e.get("source"), (String) e.get("target"));
+            }
+        }
+        Map<String, List<String>> groups = new LinkedHashMap<>();
+        for (String id : parent.keySet()) groups.computeIfAbsent(find(parent, id), k -> new ArrayList<>()).add(id);
+
+        List<Map<String, Object>> clusters = new ArrayList<>();
+        for (List<String> members : groups.values()) {
+            if (members.size() < 2) continue;
+            // Label a cluster after its best-connected member.
+            String hub = members.stream().max(Comparator.comparingLong(m -> degree.getOrDefault(m, 0L))).orElse(members.get(0));
+            clusters.add(Map.of("label", String.valueOf(titles.get(hub)), "nodeIds", members, "size", members.size()));
+        }
+        return clusters;
+    }
+
+    private static String find(Map<String, String> parent, String x) {
+        while (!parent.get(x).equals(x)) {
+            parent.put(x, parent.get(parent.get(x)));
+            x = parent.get(x);
+        }
+        return x;
+    }
+
+    private static void union(Map<String, String> parent, String a, String b) {
+        if (!parent.containsKey(a) || !parent.containsKey(b)) return;
+        String ra = find(parent, a), rb = find(parent, b);
+        if (!ra.equals(rb)) parent.put(ra, rb);
+    }
+
+    /** Legend metadata for all relationship types. */
+    public List<Map<String, Object>> getRelationTypeInfo() {
+        List<Map<String, Object>> types = new ArrayList<>();
+        for (RelationType rt : RelationType.values()) {
+            types.add(Map.of("code", rt.getCode(), "color", rt.getColor(), "directional", rt.isDirectional(),
+                    "description", rt.getDescription(), "label", rt.label()));
+        }
+        return types;
     }
 
     /**

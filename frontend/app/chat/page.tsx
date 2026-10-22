@@ -39,7 +39,7 @@ export default function ChatPage() {
   return (
     <div className="mx-auto flex h-[calc(100vh-4rem)] max-w-3xl flex-col">
       <h1 className="text-2xl font-semibold">Chat</h1>
-      <p className="text-sm text-zinc-400">Answers come only from your knowledge base. If it can't answer, it asks before using outside knowledge.</p>
+      <p className="text-sm text-zinc-400">Answers come only from your knowledge base. If it can&apos;t answer, it asks before using outside knowledge.</p>
       <div className="mt-4 flex-1 space-y-4 overflow-y-auto pr-1">
         {msgs.length === 0 && <p className="text-sm text-zinc-500">Ask anything about your saved notes, videos and papers.</p>}
         {msgs.map((m, i) => (
@@ -58,7 +58,7 @@ export default function ChatPage() {
                         ) : (
                           <span className="text-zinc-300">{s.title}</span>
                         )}
-                        {s.relation !== "retrieved" && <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-amber-300">linked: {s.relation.replace(/^graph: related \(?/, "").replace(/\)$/, "")}</span>}
+                        {s.relation !== "retrieved" && <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-amber-300">{s.relation.replace(/^graph: /, "")}</span>}
                       </li>
                     ))}
                   </ul>

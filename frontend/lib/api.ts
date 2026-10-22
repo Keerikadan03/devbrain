@@ -19,9 +19,39 @@ export type SearchHit = {
   snippet: string;
 };
 
+export type RelationTypeInfo = {
+  code: string;
+  color: string;
+  directional: boolean;
+  description: string;
+  label: string;
+};
+
+export type GraphNodeData = {
+  id: string;
+  title: string;
+  source: string;
+  summary?: string | null;
+  createdAt?: string | null;
+  connectionCount: number;
+};
+
+/** A directional edge reads "source <relationType> target", e.g. "A builds upon B". */
+export type GraphEdgeData = {
+  source: string;
+  target: string;
+  score: number;
+  relationType: string;
+  color: string;
+  directional: boolean;
+  explanation: string;
+};
+
 export type GraphData = {
-  nodes: { id: string; title: string; source: string }[];
-  edges: { from: string; to: string; kind: "related"; score: number; via: string }[];
+  nodes: GraphNodeData[];
+  edges: GraphEdgeData[];
+  clusters: { label: string; nodeIds: string[]; size: number }[];
+  relationTypes: RelationTypeInfo[];
 };
 
 export type ChatSource = {

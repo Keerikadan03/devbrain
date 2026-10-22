@@ -27,24 +27,43 @@ public final class Prompts {
         Text to analyze:
         """;
 
-    /** Judges candidate links between a new document and existing ones. */
-    public static final String RELATION_JUDGE = """
-        You decide whether documents in a personal knowledge base are genuinely related to a NEW document.
+    /**
+     * Classifies how candidate documents relate to a NEW document (8 typed relationships).
+     * The NEW document and numbered CANDIDATES are appended after this text.
+     */
+    public static final String RELATIONSHIP_CLASSIFIER = """
+        You classify how documents in a personal knowledge base relate to a NEW document.
 
-        Two documents are related ONLY if they are about the same specific subject: the same technology,
-        programming language, product, entity, event, vulnerability, algorithm or problem, or one directly
-        explains, extends, applies or contradicts the other.
-        Documents about different ASPECTS of the same specific subject ARE related: e.g. a language's manual,
-        a tutorial on that language, a security report about it and career advice about it all concern that language.
-        A very short note that just names a subject (e.g. the single word "php") is related to documents about that subject.
-        They are NOT related just because they share a generic category or format: both being documentation,
-        tutorials, videos, articles, "about programming", "about security" in general, or having similar structure.
+        STEP 1 - Are they related at all?
+        Related ONLY if both are about the same specific subject (the same technology, programming language,
+        product, entity, event, vulnerability, algorithm or problem), or one directly explains, extends,
+        applies, replaces or contradicts the other. Different ASPECTS of the same specific subject ARE related
+        (a language's manual, a tutorial on it, a security report about it, career advice about it).
+        A very short note that just names a subject (e.g. the single word "php") is related to documents about it.
+        NOT related just because they share a generic category or format: both documentation, both tutorials,
+        both videos, both "about programming" or "about security" in general, or similar structure.
+
+        STEP 2 - For related pairs pick exactly ONE type:
+        - same_concept: both are about the same core concept (two notes about event sourcing)
+        - shared_idea: overlapping but distinct concepts (CQRS and event sourcing)
+        - opposing_view: conflicting opinions or recommendations on the same topic
+        - builds_upon: one builds on the other, which is its prerequisite/foundation (directional)
+        - example_of: one is a concrete instance/implementation of the other's abstract concept (directional)
+        - supersedes: one evolved from or replaced the other (newer version, successor) (directional)
+        - depends_on: a practical runtime/system dependency, not just a conceptual one (directional)
+        - contrasts_with: legitimate alternatives for the same problem, neither wrong (PostgreSQL vs MongoDB)
+        Prefer the most specific type that is clearly supported; use shared_idea when unsure.
+
+        DIRECTION (directional types only): an edge reads "FROM <type> TO".
+        Set "from" to "new" if the NEW document is the FROM side (e.g. NEW builds upon the candidate),
+        or "candidate" if the candidate is the FROM side (e.g. the candidate is an example of NEW).
 
         Return ONLY a JSON array with one object per candidate, no markdown fences:
-        [{"id": 1, "related": true, "strength": 0.8, "relation": "<=15 words naming the specific shared subject"},
-         {"id": 2, "related": false, "relation": "<=15 words on why they are different subjects"}]
-        Use strength 0..1 (1 = same subject and aspect, 0.7 = same subject, different aspect, 0.5 = clearly
-        connected, below 0.5 = weak).
+        [{"id": 1, "related": true, "type": "builds_upon", "from": "new", "strength": 0.8,
+          "explanation": "<=20 words naming the specific shared subject and how they relate"},
+         {"id": 2, "related": false, "explanation": "<=15 words on why they are different subjects"}]
+        strength 0..1: 1 = same subject and aspect, 0.7 = same subject, different aspect,
+        0.5 = clearly connected, below 0.5 = weak.
 
         """;
 
