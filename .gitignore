@@ -16,3 +16,6 @@ frontend/next-env.d.ts
 .vscode/
 *.iml
 .DS_Store
+
+# local tooling
+.github/modernize/
