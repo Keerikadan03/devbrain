@@ -4,9 +4,9 @@ spring:
 
   # PostgreSQL + pgvector
   datasource:
-    url: jdbc:postgresql://localhost:5433/devbrain
-    username: devbrain
-    password: devbrain
+    url: jdbc:postgresql://${POSTGRES_HOST:localhost}:${POSTGRES_PORT:5433}/${POSTGRES_DB:devbrain}
+    username: ${POSTGRES_USER:devbrain}
+    password: ${POSTGRES_PASSWORD:devbrain}
     driver-class-name: org.postgresql.Driver
   jpa:
     hibernate:
@@ -18,14 +18,14 @@ spring:
 
   # Neo4j
   neo4j:
-    uri: bolt://localhost:7687
+    uri: ${NEO4J_URI:bolt://localhost:7687}
     authentication:
       username: neo4j
-      password: devbrain123
+      password: ${NEO4J_PASSWORD:devbrain123}
 
   # Kafka
   kafka:
-    bootstrap-servers: localhost:9092
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
     consumer:
       group-id: devbrain-group
       auto-offset-reset: earliest
@@ -45,20 +45,29 @@ langchain4j:
   anthropic:
     chat-model:
       api-key: ${ANTHROPIC_API_KEY:demo}
-      model-name: claude-haiku-5-5
+      model-name: ${ANTHROPIC_MODEL:claude-haiku-5-5}
       max-tokens: 4096
 
 # DevBrain custom config
 devbrain:
+  # vector store: same Postgres as above
+  pgvector:
+    host: ${POSTGRES_HOST:localhost}
+    port: ${POSTGRES_PORT:5433}
+    database: ${POSTGRES_DB:devbrain}
   knowledge:
     similarity-threshold: 0.45        # candidate recall cutoff (node vectors); raised automatically as the graph grows
     max-relationships-per-node: 15    # cap on candidates judged per new document
-    cluster-threshold: 0.8            # same_concept strength that groups nodes into a visual cluster
     max-text-length: 8000
+  topics:
+    llm-names: ${TOPICS_LLM_NAMES:true}                  # readable group names via one batched LLM call, only when groups change
   whisper:
-    enabled: true
-    binary: whisper-cli
-    model: ${user.home}/.devbrain/models/ggml-base.en.bin
+    enabled: ${WHISPER_ENABLED:true}
+    binary: ${WHISPER_BINARY:whisper-cli}
+    model: ${WHISPER_MODEL_PATH:${user.home}/.devbrain/models/ggml-base.en.bin}
+  ytdlp:
+    binary: ${YTDLP_BINARY:yt-dlp}
+    cookies-file: ${YTDLP_COOKIES_FILE:}             # exported cookies.txt for login-walled videos (Instagram etc.)
   kafka:
     topic:
       ingestion: devbrain.ingestion

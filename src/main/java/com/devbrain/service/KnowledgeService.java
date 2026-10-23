@@ -38,6 +38,7 @@ public class KnowledgeService {
     private final ObjectMapper objectMapper;
     private final Neo4jClient neo4jClient;
     private final RelationshipClassifier relationshipClassifier;
+    private final TopicHierarchyService topicHierarchy;
     private final JdbcTemplate jdbc;
 
     /** Minimum node-vector similarity for a document to be considered as a link candidate (small graphs). */
@@ -48,9 +49,7 @@ public class KnowledgeService {
     @Value("${devbrain.knowledge.max-relationships-per-node:15}")
     private int maxRelationshipsPerNode;
 
-    /** same_concept edges at or above this strength put their nodes in one visual cluster. */
-    @Value("${devbrain.knowledge.cluster-threshold:0.8}")
-    private double clusterThreshold;
+
 
     public KnowledgeService(
             KnowledgeNodeRepository nodeRepository,
@@ -60,6 +59,7 @@ public class KnowledgeService {
             ObjectMapper objectMapper,
             Neo4jClient neo4jClient,
             RelationshipClassifier relationshipClassifier,
+            TopicHierarchyService topicHierarchy,
             JdbcTemplate jdbc) {
         this.nodeRepository = nodeRepository;
         this.graphNodeRepository = graphNodeRepository;
@@ -68,6 +68,7 @@ public class KnowledgeService {
         this.objectMapper = objectMapper;
         this.neo4jClient = neo4jClient;
         this.relationshipClassifier = relationshipClassifier;
+        this.topicHierarchy = topicHierarchy;
         this.jdbc = jdbc;
     }
 
@@ -116,6 +117,7 @@ public class KnowledgeService {
 
         // 2. Embeddings (pgvector) + 3. graph (Neo4j) + 4. auto-link
         indexNode(node, parsed.get("tags"), parsed.get("concepts"), autoLink);
+        topicHierarchy.markDirty();
 
         return node;
     }
@@ -383,7 +385,8 @@ public class KnowledgeService {
      * Whole graph for visualization:
      * { nodes: [{id,title,source,summary,createdAt,connectionCount}],
      *   edges: [{source,target,score,relationType,color,directional,explanation}],
-     *   clusters: [{label,nodeIds,size}], relationTypes: [{code,color,directional,description,label}] }
+     *   topics: hierarchical named topic groups (see TopicHierarchyService),
+     *   relationTypes: [{code,color,directional,description,label}] }
      * connectionCount is computed here rather than stored, so it can never go stale after deletes.
      */
     public Map<String, Object> getGraph() {
@@ -402,55 +405,9 @@ public class KnowledgeService {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("nodes", nodes);
         result.put("edges", edges);
-        result.put("clusters", computeClusters(nodes, edges));
+        result.put("topics", topicHierarchy.get());
         result.put("relationTypes", getRelationTypeInfo());
         return result;
-    }
-
-    /**
-     * Union-find over strong same_concept edges: nodes about the same thing form one cluster.
-     */
-    private List<Map<String, Object>> computeClusters(List<Map<String, Object>> nodes, List<Map<String, Object>> edges) {
-        Map<String, String> parent = new HashMap<>();
-        Map<String, String> titles = new HashMap<>();
-        Map<String, Long> degree = new HashMap<>();
-        for (Map<String, Object> n : nodes) {
-            String id = (String) n.get("id");
-            parent.put(id, id);
-            titles.put(id, (String) n.get("title"));
-            degree.put(id, n.get("connectionCount") instanceof Number c ? c.longValue() : 0L);
-        }
-        for (Map<String, Object> e : edges) {
-            double score = e.get("score") instanceof Number n ? n.doubleValue() : 0;
-            if (RelationType.SAME_CONCEPT.getCode().equals(e.get("relationType")) && score >= clusterThreshold) {
-                union(parent, (String) e.get("source"), (String) e.get("target"));
-            }
-        }
-        Map<String, List<String>> groups = new LinkedHashMap<>();
-        for (String id : parent.keySet()) groups.computeIfAbsent(find(parent, id), k -> new ArrayList<>()).add(id);
-
-        List<Map<String, Object>> clusters = new ArrayList<>();
-        for (List<String> members : groups.values()) {
-            if (members.size() < 2) continue;
-            // Label a cluster after its best-connected member.
-            String hub = members.stream().max(Comparator.comparingLong(m -> degree.getOrDefault(m, 0L))).orElse(members.get(0));
-            clusters.add(Map.of("label", String.valueOf(titles.get(hub)), "nodeIds", members, "size", members.size()));
-        }
-        return clusters;
-    }
-
-    private static String find(Map<String, String> parent, String x) {
-        while (!parent.get(x).equals(x)) {
-            parent.put(x, parent.get(parent.get(x)));
-            x = parent.get(x);
-        }
-        return x;
-    }
-
-    private static void union(Map<String, String> parent, String a, String b) {
-        if (!parent.containsKey(a) || !parent.containsKey(b)) return;
-        String ra = find(parent, a), rb = find(parent, b);
-        if (!ra.equals(rb)) parent.put(ra, rb);
     }
 
     /** Legend metadata for all relationship types. */
@@ -479,6 +436,7 @@ public class KnowledgeService {
         neo4jClient.query("MATCH (c:Concept) WHERE NOT (c)<-[:MENTIONS]-() DELETE c").run();
         int vectors = jdbc.update("DELETE FROM embeddings WHERE metadata->>'nodeId' = ?", id);
         nodeRepository.deleteById(uuid);
+        topicHierarchy.markDirty();
         log.info("[KnowledgeService] Deleted node {} ({} vectors)", id, vectors);
         return true;
     }
@@ -498,6 +456,7 @@ public class KnowledgeService {
             judgements.addAll(indexNode(n, meta.get("tags"), meta.get("concepts"), true));
         }
         log.info("[KnowledgeService] Reindexed {} nodes", all.size());
+        topicHierarchy.markDirty();
         return Map.of("reindexed", all.size(), "judgements", judgements);
     }
 

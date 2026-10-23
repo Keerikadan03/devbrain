@@ -67,6 +67,21 @@ public final class Prompts {
 
         """;
 
+    /** Names nested topic groups; the groups (ids, levels, hint terms, sample titles) are appended. */
+    public static final String TOPIC_NAMER = """
+        You name topic groups in a personal knowledge base. Groups are nested: a higher level contains lower ones.
+        For EACH group give a short topic name (2-6 words) for the idea that ALL of its documents share.
+        - Higher-level groups get broader names; a sub-group's name must say what distinguishes it from its siblings.
+        - No two groups may share a name, and a sub-group must not repeat its parent's name.
+        - Prefer plain descriptive topics ("Protests over voter-list revision") over a person's or organisation's
+          name, unless the group is genuinely about that person or organisation.
+        - Use the hint terms and sample titles; don't invent facts.
+        Return ONLY a JSON object mapping every group id to its name, no markdown fences:
+        {"topic-ab12cd": "Name", "topic-ef34gh": "Name"}
+
+        GROUPS
+        """;
+
     public static final String IMAGE_EXTRACT = """
         Analyze this image and return a JSON object with:
         {

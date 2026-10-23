@@ -47,10 +47,31 @@ export type GraphEdgeData = {
   explanation: string;
 };
 
+/** A named topic group. level = nesting height: 1 holds only documents, 2 holds level-1 groups, ... */
+export type Topic = {
+  id: string;
+  name: string;
+  level: number;
+  parentId: string | null;
+  childClusterIds: string[];
+  docIds: string[]; // direct member documents
+  size: number; // all documents inside, including nested groups
+  terms: string[];
+};
+
+export type Topics = {
+  clusters: Topic[];
+  rootClusterIds: string[];
+  rootDocIds: string[]; // documents in no group (level 0)
+  docParent: Record<string, string>;
+  algorithm: string;
+  nameSource: string;
+};
+
 export type GraphData = {
   nodes: GraphNodeData[];
   edges: GraphEdgeData[];
-  clusters: { label: string; nodeIds: string[]; size: number }[];
+  topics: Topics;
   relationTypes: RelationTypeInfo[];
 };
 

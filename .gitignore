@@ -1,0 +1,18 @@
+# secrets
+.env
+.env.*
+!.env.example
+cookies.txt
+
+# build output
+target/
+frontend/.next/
+frontend/node_modules/
+frontend/*.tsbuildinfo
+frontend/next-env.d.ts
+
+# editors / OS
+.idea/
+.vscode/
+*.iml
+.DS_Store
